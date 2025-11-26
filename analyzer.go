@@ -206,7 +206,15 @@ func checkTestPlacement(test TestInfo, testFile string, fileFunctions map[string
 		return nil
 	}
 
-	primarySource := findPrimarySourceFile(test.CalledFuncs, fileFunctions)
+	// First, try to find the function under test by naming convention
+	// TestFoo -> Foo, TestFoo_SubTest -> Foo, Test_Foo -> Foo
+	primarySource := findSourceByTestName(test.Name, test.CalledFuncs, fileFunctions)
+
+	// Fall back to counting unique called functions per file
+	if primarySource == "" {
+		primarySource = findPrimarySourceFile(test.CalledFuncs, fileFunctions)
+	}
+
 	if primarySource == "" {
 		return nil
 	}
@@ -226,6 +234,71 @@ func checkTestPlacement(test TestInfo, testFile string, fileFunctions map[string
 		ExpectedFile: expectedTestFile,
 		ActualFile:   testFile,
 	}
+}
+
+// findSourceByTestName tries to find the function under test by extracting
+// the function name from the test name (e.g., TestFoo -> Foo)
+func findSourceByTestName(testName string, calledFuncs []string, fileFunctions map[string][]FuncInfo) string {
+	funcName := extractFunctionNameFromTest(testName)
+	if funcName == "" {
+		return ""
+	}
+
+	// Check if this function was actually called in the test
+	funcCalled := false
+	for _, called := range calledFuncs {
+		// Match both "FuncName" and "Type_FuncName" patterns
+		if called == funcName || strings.HasSuffix(called, "_"+funcName) {
+			funcCalled = true
+			break
+		}
+		// Also try case-insensitive match for first letter (TestFoo -> foo)
+		if len(funcName) > 0 {
+			lowerFirst := strings.ToLower(funcName[:1]) + funcName[1:]
+			if called == lowerFirst || strings.HasSuffix(called, "_"+lowerFirst) {
+				funcName = lowerFirst
+				funcCalled = true
+				break
+			}
+		}
+	}
+
+	if !funcCalled {
+		return ""
+	}
+
+	// Find which source file contains this function
+	for sourceFile, funcs := range fileFunctions {
+		for _, f := range funcs {
+			if f.Name == funcName {
+				return sourceFile
+			}
+		}
+	}
+
+	return ""
+}
+
+// extractFunctionNameFromTest extracts the function name from a test name
+// TestFoo -> Foo, TestFoo_Bar -> Foo, Test_Foo -> Foo, TestFooBar -> FooBar
+func extractFunctionNameFromTest(testName string) string {
+	// Remove "Test" prefix
+	if !strings.HasPrefix(testName, "Test") {
+		return ""
+	}
+	name := testName[4:]
+
+	// Handle Test_Foo pattern
+	if strings.HasPrefix(name, "_") {
+		name = name[1:]
+	}
+
+	// Handle TestFoo_SubTest pattern - take only the part before underscore
+	if idx := strings.Index(name, "_"); idx > 0 {
+		name = name[:idx]
+	}
+
+	return name
 }
 
 // findPrimarySourceFile finds the source file with the most called functions

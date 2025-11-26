@@ -897,3 +897,100 @@ func TestFindFunctionsWithoutTests_Sorting(t *testing.T) {
 		}
 	}
 }
+
+func TestExtractFunctionNameFromTest(t *testing.T) {
+	tests := []struct {
+		testName string
+		expected string
+	}{
+		{"TestFoo", "Foo"},
+		{"TestFooBar", "FooBar"},
+		{"TestFoo_SubTest", "Foo"},
+		{"Test_Foo", "Foo"},
+		{"Test_Foo_Bar", "Foo"},
+		{"TestNeedReplaceOnDemandInstances", "NeedReplaceOnDemandInstances"},
+		{"BenchmarkFoo", ""},  // Not a Test
+		{"NotATest", ""},
+		{"Test", ""},  // Just "Test" with nothing after
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.testName, func(t *testing.T) {
+			got := extractFunctionNameFromTest(tt.testName)
+			if got != tt.expected {
+				t.Errorf("extractFunctionNameFromTest(%q) = %q, want %q", tt.testName, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestFindSourceByTestName(t *testing.T) {
+	fileFunctions := map[string][]FuncInfo{
+		"asg_capacity.go":    {{Name: "needReplaceOnDemandInstances"}},
+		"instance_manager.go": {{Name: "makeInstancesWithCatalog"}, {Name: "CreateInstance"}},
+	}
+
+	tests := []struct {
+		name         string
+		testName     string
+		calledFuncs  []string
+		expectedFile string
+	}{
+		{
+			name:         "matches function under test by naming convention",
+			testName:     "TestNeedReplaceOnDemandInstances",
+			calledFuncs:  []string{"needReplaceOnDemandInstances", "makeInstancesWithCatalog", "makeInstancesWithCatalog", "makeInstancesWithCatalog"},
+			expectedFile: "asg_capacity.go",
+		},
+		{
+			name:         "case insensitive first letter",
+			testName:     "TestCreateInstance",
+			calledFuncs:  []string{"CreateInstance"},
+			expectedFile: "instance_manager.go",
+		},
+		{
+			name:         "no match - function not called",
+			testName:     "TestSomethingElse",
+			calledFuncs:  []string{"makeInstancesWithCatalog"},
+			expectedFile: "",
+		},
+		{
+			name:         "no match - function not in source files",
+			testName:     "TestUnknown",
+			calledFuncs:  []string{"Unknown"},
+			expectedFile: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := findSourceByTestName(tt.testName, tt.calledFuncs, fileFunctions)
+			if got != tt.expectedFile {
+				t.Errorf("findSourceByTestName(%q) = %q, want %q", tt.testName, got, tt.expectedFile)
+			}
+		})
+	}
+}
+
+func TestCheckTestPlacement_NamingConvention(t *testing.T) {
+	// This test verifies that naming convention takes precedence over call counting
+	fileFunctions := map[string][]FuncInfo{
+		"asg_capacity.go":    {{Name: "needReplaceOnDemandInstances"}},
+		"instance_manager.go": {{Name: "makeInstancesWithCatalog"}},
+	}
+
+	// Test calls needReplaceOnDemandInstances once but makeInstancesWithCatalog 3 times
+	// Without naming convention, it would suggest instance_manager_test.go
+	// With naming convention, it correctly identifies asg_capacity_test.go
+	test := TestInfo{
+		Name:        "TestNeedReplaceOnDemandInstances",
+		CalledFuncs: []string{"needReplaceOnDemandInstances", "makeInstancesWithCatalog", "makeInstancesWithCatalog", "makeInstancesWithCatalog"},
+	}
+
+	result := checkTestPlacement(test, "asg_capacity_test.go", fileFunctions)
+
+	// Should NOT be misplaced - naming convention should match it to asg_capacity.go
+	if result != nil {
+		t.Errorf("Test should not be misplaced, but got suggestion to move to %s", result.ExpectedFile)
+	}
+}
