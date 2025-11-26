@@ -53,10 +53,35 @@ func printResults(result *AnalysisResult, baseDir string) {
 		}
 	}
 
+	// Low coverage functions (if threshold was set)
+	if len(result.LowCoverageFuncs) > 0 {
+		fmt.Println()
+		fmt.Println("-" + strings.Repeat("-", 79))
+		threshold := result.LowCoverageFuncs[0].Threshold
+		fmt.Printf("LOW COVERAGE FUNCTIONS (below %.1f%%) (%d)\n", threshold, len(result.LowCoverageFuncs))
+		fmt.Println("-" + strings.Repeat("-", 79))
+
+		currentFile := ""
+		for _, f := range result.LowCoverageFuncs {
+			if f.File != currentFile {
+				if currentFile != "" {
+					fmt.Println()
+				}
+				currentFile = f.File
+				fmt.Printf("\n%s:\n", f.File)
+			}
+			fmt.Printf("  Line %d: %s (%.1f%%)\n", f.Line, f.Name, f.Coverage)
+		}
+	}
+
 	fmt.Println()
 	fmt.Println("=" + strings.Repeat("=", 79))
 
 	// Summary
-	fmt.Printf("Summary: %d functions without tests, %d misplaced tests\n",
+	summary := fmt.Sprintf("Summary: %d functions without tests, %d misplaced tests",
 		len(result.FunctionsWithoutTests), len(result.MisplacedTests))
+	if len(result.LowCoverageFuncs) > 0 {
+		summary += fmt.Sprintf(", %d low coverage functions", len(result.LowCoverageFuncs))
+	}
+	fmt.Println(summary)
 }

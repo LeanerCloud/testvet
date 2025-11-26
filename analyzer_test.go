@@ -174,6 +174,16 @@ func TestExtractFuncNameFromCall(t *testing.T) {
 			code: `package test; func f() { fmt.Println() }`,
 			want: "fmt_Println",
 		},
+		{
+			name: "chained call",
+			code: `package test; func f() { a.b.Method() }`,
+			want: "Method",
+		},
+		{
+			name: "function literal call",
+			code: `package test; func f() { func(){}() }`,
+			want: "",
+		},
 	}
 
 	for _, tt := range tests {
@@ -743,6 +753,147 @@ func (m *MyType) Method() {}
 			if info.Receiver != "MyType" {
 				t.Errorf("Expected receiver MyType, got %s", info.Receiver)
 			}
+		}
+	}
+}
+
+func TestParseProjectFiles_InvalidGoFile(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "test-invalid-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	// Create an invalid Go file
+	invalidContent := `package testpkg
+func Broken( {
+`
+	err = os.WriteFile(filepath.Join(tmpDir, "invalid.go"), []byte(invalidContent), 0644)
+	if err != nil {
+		t.Fatalf("Failed to write invalid file: %v", err)
+	}
+
+	// Should not fail, just skip the invalid file
+	result, err := parseProjectFiles(tmpDir, false, false)
+	if err != nil {
+		t.Fatalf("parseProjectFiles should not fail on invalid file: %v", err)
+	}
+
+	// No functions should be found from the invalid file
+	if len(result.fileFunctions) != 0 {
+		t.Errorf("Expected 0 source files from invalid Go, got %d", len(result.fileFunctions))
+	}
+}
+
+func TestParseProjectFiles_VerboseMode(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "test-verbose-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	// Create an invalid Go file
+	invalidContent := `package testpkg
+func Broken( {
+`
+	err = os.WriteFile(filepath.Join(tmpDir, "invalid.go"), []byte(invalidContent), 0644)
+	if err != nil {
+		t.Fatalf("Failed to write invalid file: %v", err)
+	}
+
+	// Run with verbose=true (warning should be printed to stderr)
+	result, err := parseProjectFiles(tmpDir, false, true)
+	if err != nil {
+		t.Fatalf("parseProjectFiles should not fail: %v", err)
+	}
+
+	if len(result.fileFunctions) != 0 {
+		t.Errorf("Expected 0 source files, got %d", len(result.fileFunctions))
+	}
+}
+
+func TestFindMisplacedTests_Sorting(t *testing.T) {
+	// Multiple misplaced tests should be sorted by file, then line
+	fileTests := map[string][]TestInfo{
+		"z_test.go": {
+			{Name: "TestZ1", CalledFuncs: []string{"FuncB"}, Line: 20},
+			{Name: "TestZ2", CalledFuncs: []string{"FuncB"}, Line: 10},
+		},
+		"a_test.go": {
+			{Name: "TestA", CalledFuncs: []string{"FuncB"}, Line: 5},
+		},
+	}
+	fileFunctions := map[string][]FuncInfo{
+		"b.go": {{Name: "FuncB"}},
+	}
+
+	result := findMisplacedTests(fileTests, fileFunctions)
+
+	if len(result) != 3 {
+		t.Fatalf("Expected 3 misplaced tests, got %d", len(result))
+	}
+
+	// Should be sorted: a_test.go:5, z_test.go:10, z_test.go:20
+	expectedOrder := []struct {
+		file string
+		line int
+	}{
+		{"a_test.go", 5},
+		{"z_test.go", 10},
+		{"z_test.go", 20},
+	}
+
+	for i, expected := range expectedOrder {
+		if result[i].ActualFile != expected.file || result[i].Test.Line != expected.line {
+			t.Errorf("Position %d: expected %s:%d, got %s:%d",
+				i, expected.file, expected.line, result[i].ActualFile, result[i].Test.Line)
+		}
+	}
+}
+
+func TestGetReceiverType_UnknownExpr(t *testing.T) {
+	// Test with an expression type that doesn't match any case
+	// Using a BasicLit as an example of an unexpected type
+	expr := &ast.BasicLit{Kind: token.INT, Value: "42"}
+	result := getReceiverType(expr)
+	if result != "" {
+		t.Errorf("Expected empty string for unknown expr type, got %q", result)
+	}
+}
+
+func TestFindFunctionsWithoutTests_Sorting(t *testing.T) {
+	// Test that results are sorted by file, then line
+	fileFunctions := map[string][]FuncInfo{
+		"z.go": {
+			{Name: "FuncZ2", File: "z.go", Line: 30},
+			{Name: "FuncZ1", File: "z.go", Line: 10},
+		},
+		"a.go": {
+			{Name: "FuncA", File: "a.go", Line: 20},
+		},
+	}
+	testedFuncs := map[string]bool{} // none tested
+
+	result := findFunctionsWithoutTests(fileFunctions, testedFuncs)
+
+	if len(result) != 3 {
+		t.Fatalf("Expected 3 untested functions, got %d", len(result))
+	}
+
+	// Should be sorted: a.go:20, z.go:10, z.go:30
+	expectedOrder := []struct {
+		file string
+		line int
+	}{
+		{"a.go", 20},
+		{"z.go", 10},
+		{"z.go", 30},
+	}
+
+	for i, expected := range expectedOrder {
+		if result[i].File != expected.file || result[i].Line != expected.line {
+			t.Errorf("Position %d: expected %s:%d, got %s:%d",
+				i, expected.file, expected.line, result[i].File, result[i].Line)
 		}
 	}
 }

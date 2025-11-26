@@ -20,6 +20,16 @@ type TestInfo struct {
 type AnalysisResult struct {
 	FunctionsWithoutTests []FuncInfo
 	MisplacedTests        []MisplacedTest
+	LowCoverageFuncs      []LowCoverageFunc
+}
+
+// LowCoverageFunc represents a function with coverage below the threshold
+type LowCoverageFunc struct {
+	File       string
+	Line       int
+	Name       string
+	Coverage   float64
+	Threshold  float64
 }
 
 // MisplacedTest represents a test in the wrong file

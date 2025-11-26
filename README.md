@@ -95,6 +95,7 @@ Summary: 3 functions without tests, 1 misplaced tests
 | `-dir` | `.` | Directory to analyze |
 | `-exclude-private` | `false` | Exclude unexported functions from analysis |
 | `-verbose` | `false` | Show verbose output including parse warnings |
+| `-threshold` | `0` | Show functions with statement coverage below this percentage (0 to disable, excludes main/init) |
 
 ## testvet vs go test -cover
 

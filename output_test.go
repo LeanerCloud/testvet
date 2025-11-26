@@ -94,6 +94,28 @@ func TestPrintResults(t *testing.T) {
 				"All tests are in the correct files!",
 			},
 		},
+		{
+			name: "low coverage functions",
+			result: &AnalysisResult{
+				FunctionsWithoutTests: nil,
+				MisplacedTests:        nil,
+				LowCoverageFuncs: []LowCoverageFunc{
+					{File: "foo.go", Line: 10, Name: "FuncA", Coverage: 50.0, Threshold: 80.0},
+					{File: "foo.go", Line: 25, Name: "FuncB", Coverage: 75.5, Threshold: 80.0},
+					{File: "bar.go", Line: 5, Name: "FuncC", Coverage: 0.0, Threshold: 80.0},
+				},
+			},
+			baseDir: "/test/project",
+			wantContains: []string{
+				"LOW COVERAGE FUNCTIONS (below 80.0%) (3)",
+				"foo.go:",
+				"Line 10: FuncA (50.0%)",
+				"Line 25: FuncB (75.5%)",
+				"bar.go:",
+				"Line 5: FuncC (0.0%)",
+				"3 low coverage functions",
+			},
+		},
 	}
 
 	for _, tt := range tests {
