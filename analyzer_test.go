@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestIsTestFunction(t *testing.T) {
@@ -435,6 +436,313 @@ func RegularFunc() {}
 	for _, f := range result.FunctionsWithoutTests {
 		if f.Name == "VendorFunc" {
 			t.Errorf("VendorFunc should have been excluded from analysis")
+		}
+	}
+}
+
+func TestShouldSkipDir(t *testing.T) {
+	tests := []struct {
+		name     string
+		dirName  string
+		isDir    bool
+		expected bool
+	}{
+		{"vendor dir", "vendor", true, true},
+		{"testdata dir", "testdata", true, true},
+		{"hidden dir", ".git", true, true},
+		{"regular dir", "src", true, false},
+		{"file not dir", "vendor", false, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			info := &mockFileInfo{name: tt.dirName, isDir: tt.isDir}
+			got := shouldSkipDir(info)
+			if got != tt.expected {
+				t.Errorf("shouldSkipDir(%q, isDir=%v) = %v, want %v", tt.dirName, tt.isDir, got, tt.expected)
+			}
+		})
+	}
+}
+
+type mockFileInfo struct {
+	name  string
+	isDir bool
+}
+
+func (m *mockFileInfo) Name() string       { return m.name }
+func (m *mockFileInfo) IsDir() bool        { return m.isDir }
+func (m *mockFileInfo) Size() int64        { return 0 }
+func (m *mockFileInfo) Mode() os.FileMode  { return 0 }
+func (m *mockFileInfo) ModTime() time.Time { return time.Time{} }
+func (m *mockFileInfo) Sys() interface{}   { return nil }
+
+func TestBuildTestedFuncsMap(t *testing.T) {
+	fileTests := map[string][]TestInfo{
+		"a_test.go": {
+			{Name: "TestA", CalledFuncs: []string{"FuncA", "helper"}},
+		},
+		"b_test.go": {
+			{Name: "TestB", CalledFuncs: []string{"FuncB"}},
+		},
+	}
+
+	result := buildTestedFuncsMap(fileTests)
+
+	expected := []string{"FuncA", "helper", "FuncB"}
+	for _, fn := range expected {
+		if !result[fn] {
+			t.Errorf("Expected %q to be in tested funcs map", fn)
+		}
+	}
+}
+
+func TestIsFunctionTested(t *testing.T) {
+	testedFuncs := map[string]bool{
+		"Foo":        true,
+		"MyType_Bar": true,
+	}
+
+	tests := []struct {
+		name     string
+		funcInfo FuncInfo
+		expected bool
+	}{
+		{"simple tested", FuncInfo{Name: "Foo"}, true},
+		{"method tested", FuncInfo{Name: "Bar", Receiver: "MyType"}, true},
+		{"not tested", FuncInfo{Name: "Baz"}, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isFunctionTested(tt.funcInfo, testedFuncs)
+			if got != tt.expected {
+				t.Errorf("isFunctionTested(%v) = %v, want %v", tt.funcInfo, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestMatchesFunctionCall(t *testing.T) {
+	tests := []struct {
+		name       string
+		funcInfo   FuncInfo
+		calledFunc string
+		expected   bool
+	}{
+		{"exact match", FuncInfo{Name: "Foo"}, "Foo", true},
+		{"method match", FuncInfo{Name: "Bar", Receiver: "MyType"}, "MyType_Bar", true},
+		{"no match", FuncInfo{Name: "Foo"}, "Bar", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := matchesFunctionCall(tt.funcInfo, tt.calledFunc)
+			if got != tt.expected {
+				t.Errorf("matchesFunctionCall(%v, %q) = %v, want %v", tt.funcInfo, tt.calledFunc, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestFindFunctionsWithoutTests(t *testing.T) {
+	fileFunctions := map[string][]FuncInfo{
+		"a.go": {
+			{Name: "TestedFunc", File: "a.go", Line: 10},
+			{Name: "UntestedFunc", File: "a.go", Line: 20},
+		},
+	}
+	testedFuncs := map[string]bool{"TestedFunc": true}
+
+	result := findFunctionsWithoutTests(fileFunctions, testedFuncs)
+
+	if len(result) != 1 {
+		t.Fatalf("Expected 1 untested function, got %d", len(result))
+	}
+	if result[0].Name != "UntestedFunc" {
+		t.Errorf("Expected UntestedFunc, got %s", result[0].Name)
+	}
+}
+
+func TestFindPrimarySourceFile(t *testing.T) {
+	fileFunctions := map[string][]FuncInfo{
+		"a.go": {{Name: "FuncA"}, {Name: "FuncA2"}},
+		"b.go": {{Name: "FuncB"}},
+	}
+
+	tests := []struct {
+		name        string
+		calledFuncs []string
+		expected    string
+	}{
+		{"single file", []string{"FuncB"}, "b.go"},
+		{"multiple from same file", []string{"FuncA", "FuncA2"}, "a.go"},
+		{"mixed - a wins", []string{"FuncA", "FuncA2", "FuncB"}, "a.go"},
+		{"no matches", []string{"Unknown"}, ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := findPrimarySourceFile(tt.calledFuncs, fileFunctions)
+			if got != tt.expected {
+				t.Errorf("findPrimarySourceFile(%v) = %q, want %q", tt.calledFuncs, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestCheckTestPlacement(t *testing.T) {
+	fileFunctions := map[string][]FuncInfo{
+		"a.go": {{Name: "FuncA"}},
+		"b.go": {{Name: "FuncB"}},
+	}
+
+	tests := []struct {
+		name           string
+		test           TestInfo
+		testFile       string
+		expectMisplace bool
+	}{
+		{
+			"correctly placed",
+			TestInfo{Name: "TestA", CalledFuncs: []string{"FuncA"}},
+			"a_test.go",
+			false,
+		},
+		{
+			"misplaced",
+			TestInfo{Name: "TestB", CalledFuncs: []string{"FuncB"}},
+			"a_test.go",
+			true,
+		},
+		{
+			"no called funcs",
+			TestInfo{Name: "TestEmpty", CalledFuncs: nil},
+			"a_test.go",
+			false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := checkTestPlacement(tt.test, tt.testFile, fileFunctions)
+			if tt.expectMisplace && result == nil {
+				t.Error("Expected misplaced test, got nil")
+			}
+			if !tt.expectMisplace && result != nil {
+				t.Errorf("Expected no misplacement, got %v", result)
+			}
+		})
+	}
+}
+
+func TestFindMisplacedTests(t *testing.T) {
+	fileTests := map[string][]TestInfo{
+		"a_test.go": {
+			{Name: "TestA", CalledFuncs: []string{"FuncA"}},
+			{Name: "TestB", CalledFuncs: []string{"FuncB"}, Line: 10},
+		},
+	}
+	fileFunctions := map[string][]FuncInfo{
+		"a.go": {{Name: "FuncA"}},
+		"b.go": {{Name: "FuncB"}},
+	}
+
+	result := findMisplacedTests(fileTests, fileFunctions)
+
+	if len(result) != 1 {
+		t.Fatalf("Expected 1 misplaced test, got %d", len(result))
+	}
+	if result[0].Test.Name != "TestB" {
+		t.Errorf("Expected TestB to be misplaced, got %s", result[0].Test.Name)
+	}
+}
+
+func TestParseProjectFiles(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "test-parse-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	sourceContent := `package testpkg
+func Foo() {}
+`
+	err = os.WriteFile(filepath.Join(tmpDir, "source.go"), []byte(sourceContent), 0644)
+	if err != nil {
+		t.Fatalf("Failed to write source file: %v", err)
+	}
+
+	testContent := `package testpkg
+import "testing"
+func TestFoo(t *testing.T) { Foo() }
+`
+	err = os.WriteFile(filepath.Join(tmpDir, "source_test.go"), []byte(testContent), 0644)
+	if err != nil {
+		t.Fatalf("Failed to write test file: %v", err)
+	}
+
+	result, err := parseProjectFiles(tmpDir, false, false)
+	if err != nil {
+		t.Fatalf("parseProjectFiles failed: %v", err)
+	}
+
+	if len(result.fileFunctions) != 1 {
+		t.Errorf("Expected 1 source file, got %d", len(result.fileFunctions))
+	}
+	if len(result.fileTests) != 1 {
+		t.Errorf("Expected 1 test file, got %d", len(result.fileTests))
+	}
+}
+
+func TestProcessFileDeclarations(t *testing.T) {
+	code := `package testpkg
+func Foo() {}
+func init() {}
+func main() {}
+type Bar struct{}
+func (b *Bar) Method() {}
+`
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "test.go", code, 0)
+	if err != nil {
+		t.Fatalf("Failed to parse: %v", err)
+	}
+
+	fileFunctions := make(map[string][]FuncInfo)
+	fileTests := make(map[string][]TestInfo)
+
+	processFileDeclarations(file, fset, "test.go", false, false, fileFunctions, fileTests)
+
+	funcs := fileFunctions["test.go"]
+	if len(funcs) != 2 { // Foo and Bar.Method (init and main excluded)
+		t.Errorf("Expected 2 functions, got %d", len(funcs))
+		for _, f := range funcs {
+			t.Logf("  - %s (receiver: %s)", f.Name, f.Receiver)
+		}
+	}
+}
+
+func TestBuildFuncInfo(t *testing.T) {
+	code := `package test
+type MyType struct{}
+func (m *MyType) Method() {}
+`
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "test.go", code, 0)
+	if err != nil {
+		t.Fatalf("Failed to parse: %v", err)
+	}
+
+	for _, decl := range file.Decls {
+		if funcDecl, ok := decl.(*ast.FuncDecl); ok {
+			info := buildFuncInfo(funcDecl, funcDecl.Name.Name, "test.go", 3)
+			if info.Name != "Method" {
+				t.Errorf("Expected name Method, got %s", info.Name)
+			}
+			if info.Receiver != "MyType" {
+				t.Errorf("Expected receiver MyType, got %s", info.Receiver)
+			}
 		}
 	}
 }

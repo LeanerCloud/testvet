@@ -11,15 +11,32 @@ import (
 	"strings"
 )
 
-func analyzeProject(dir string, excludePrivate, verbose bool) (*AnalysisResult, error) {
-	// Maps to hold our data
-	// Key: "package/filename.go" -> []FuncInfo
-	fileFunctions := make(map[string][]FuncInfo)
-	// Key: "package/filename_test.go" -> []TestInfo
-	fileTests := make(map[string][]TestInfo)
-	// All functions indexed by name for matching
-	allFunctions := make(map[string][]FuncInfo) // name -> functions (can have same name in different files)
+// parseResult holds the intermediate result of parsing project files
+type parseResult struct {
+	fileFunctions map[string][]FuncInfo
+	fileTests     map[string][]TestInfo
+}
 
+func analyzeProject(dir string, excludePrivate, verbose bool) (*AnalysisResult, error) {
+	parsed, err := parseProjectFiles(dir, excludePrivate, verbose)
+	if err != nil {
+		return nil, err
+	}
+
+	testedFuncs := buildTestedFuncsMap(parsed.fileTests)
+	functionsWithoutTests := findFunctionsWithoutTests(parsed.fileFunctions, testedFuncs)
+	misplacedTests := findMisplacedTests(parsed.fileTests, parsed.fileFunctions)
+
+	return &AnalysisResult{
+		FunctionsWithoutTests: functionsWithoutTests,
+		MisplacedTests:        misplacedTests,
+	}, nil
+}
+
+// parseProjectFiles walks the directory and parses all Go files
+func parseProjectFiles(dir string, excludePrivate, verbose bool) (*parseResult, error) {
+	fileFunctions := make(map[string][]FuncInfo)
+	fileTests := make(map[string][]TestInfo)
 	fset := token.NewFileSet()
 
 	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
@@ -27,24 +44,15 @@ func analyzeProject(dir string, excludePrivate, verbose bool) (*AnalysisResult, 
 			return err
 		}
 
-		// Skip vendor and hidden directories
-		if info.IsDir() {
-			name := info.Name()
-			if name == "vendor" || name == "testdata" || strings.HasPrefix(name, ".") {
-				return filepath.SkipDir
-			}
+		if shouldSkipDir(info) {
+			return filepath.SkipDir
+		}
+
+		if info.IsDir() || !strings.HasSuffix(path, ".go") {
 			return nil
 		}
 
-		// Only process .go files
-		if !strings.HasSuffix(path, ".go") {
-			return nil
-		}
-
-		// Get relative path for cleaner output
 		relPath, _ := filepath.Rel(dir, path)
-
-		// Parse the file
 		file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
 		if err != nil {
 			if verbose {
@@ -54,62 +62,7 @@ func analyzeProject(dir string, excludePrivate, verbose bool) (*AnalysisResult, 
 		}
 
 		isTestFile := strings.HasSuffix(path, "_test.go")
-
-		// Extract functions
-		for _, decl := range file.Decls {
-			funcDecl, ok := decl.(*ast.FuncDecl)
-			if !ok {
-				continue
-			}
-
-			funcName := funcDecl.Name.Name
-			pos := fset.Position(funcDecl.Pos())
-
-			if isTestFile {
-				// Check if it's a test function
-				if isTestFunction(funcName) {
-					calledFuncs := extractCalledFunctions(funcDecl)
-					testInfo := TestInfo{
-						Name:        funcName,
-						File:        relPath,
-						Line:        pos.Line,
-						CalledFuncs: calledFuncs,
-					}
-					fileTests[relPath] = append(fileTests[relPath], testInfo)
-				}
-			} else {
-				// Skip init and main functions
-				if funcName == "init" || funcName == "main" {
-					continue
-				}
-
-				// Skip private functions if requested
-				if excludePrivate && !ast.IsExported(funcName) {
-					continue
-				}
-
-				// Get receiver type if it's a method
-				var receiver string
-				if funcDecl.Recv != nil && len(funcDecl.Recv.List) > 0 {
-					receiver = getReceiverType(funcDecl.Recv.List[0].Type)
-				}
-
-				funcInfo := FuncInfo{
-					Name:     funcName,
-					File:     relPath,
-					Line:     pos.Line,
-					Receiver: receiver,
-				}
-				fileFunctions[relPath] = append(fileFunctions[relPath], funcInfo)
-
-				// Index by function name for test matching
-				key := funcName
-				if receiver != "" {
-					key = receiver + "." + funcName
-				}
-				allFunctions[key] = append(allFunctions[key], funcInfo)
-			}
-		}
+		processFileDeclarations(file, fset, relPath, isTestFile, excludePrivate, fileFunctions, fileTests)
 
 		return nil
 	})
@@ -118,8 +71,72 @@ func analyzeProject(dir string, excludePrivate, verbose bool) (*AnalysisResult, 
 		return nil, err
 	}
 
-	// Analyze: find functions without tests
-	// Mark all functions called within tests as tested (AST analysis)
+	return &parseResult{
+		fileFunctions: fileFunctions,
+		fileTests:     fileTests,
+	}, nil
+}
+
+// shouldSkipDir returns true if the directory should be skipped
+func shouldSkipDir(info os.FileInfo) bool {
+	if !info.IsDir() {
+		return false
+	}
+	name := info.Name()
+	return name == "vendor" || name == "testdata" || strings.HasPrefix(name, ".")
+}
+
+// processFileDeclarations extracts function and test declarations from a parsed file
+func processFileDeclarations(file *ast.File, fset *token.FileSet, relPath string, isTestFile, excludePrivate bool, fileFunctions map[string][]FuncInfo, fileTests map[string][]TestInfo) {
+	for _, decl := range file.Decls {
+		funcDecl, ok := decl.(*ast.FuncDecl)
+		if !ok {
+			continue
+		}
+
+		funcName := funcDecl.Name.Name
+		pos := fset.Position(funcDecl.Pos())
+
+		if isTestFile {
+			if isTestFunction(funcName) {
+				testInfo := TestInfo{
+					Name:        funcName,
+					File:        relPath,
+					Line:        pos.Line,
+					CalledFuncs: extractCalledFunctions(funcDecl),
+				}
+				fileTests[relPath] = append(fileTests[relPath], testInfo)
+			}
+		} else {
+			if funcName == "init" || funcName == "main" {
+				continue
+			}
+			if excludePrivate && !ast.IsExported(funcName) {
+				continue
+			}
+
+			funcInfo := buildFuncInfo(funcDecl, funcName, relPath, pos.Line)
+			fileFunctions[relPath] = append(fileFunctions[relPath], funcInfo)
+		}
+	}
+}
+
+// buildFuncInfo creates a FuncInfo from a function declaration
+func buildFuncInfo(funcDecl *ast.FuncDecl, funcName, relPath string, line int) FuncInfo {
+	var receiver string
+	if funcDecl.Recv != nil && len(funcDecl.Recv.List) > 0 {
+		receiver = getReceiverType(funcDecl.Recv.List[0].Type)
+	}
+	return FuncInfo{
+		Name:     funcName,
+		File:     relPath,
+		Line:     line,
+		Receiver: receiver,
+	}
+}
+
+// buildTestedFuncsMap creates a set of function names that are called from tests
+func buildTestedFuncsMap(fileTests map[string][]TestInfo) map[string]bool {
 	testedFuncs := make(map[string]bool)
 	for _, tests := range fileTests {
 		for _, test := range tests {
@@ -128,96 +145,123 @@ func analyzeProject(dir string, excludePrivate, verbose bool) (*AnalysisResult, 
 			}
 		}
 	}
+	return testedFuncs
+}
 
-	var functionsWithoutTests []FuncInfo
+// findFunctionsWithoutTests returns functions that are not in the tested set
+func findFunctionsWithoutTests(fileFunctions map[string][]FuncInfo, testedFuncs map[string]bool) []FuncInfo {
+	var result []FuncInfo
 	for _, funcs := range fileFunctions {
 		for _, f := range funcs {
-			key := f.Name
-			if f.Receiver != "" {
-				key = f.Receiver + "_" + f.Name
-			}
-			if !testedFuncs[key] && !testedFuncs[f.Name] {
-				functionsWithoutTests = append(functionsWithoutTests, f)
+			if !isFunctionTested(f, testedFuncs) {
+				result = append(result, f)
 			}
 		}
 	}
 
-	// Sort by file then line
-	sort.Slice(functionsWithoutTests, func(i, j int) bool {
-		if functionsWithoutTests[i].File != functionsWithoutTests[j].File {
-			return functionsWithoutTests[i].File < functionsWithoutTests[j].File
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].File != result[j].File {
+			return result[i].File < result[j].File
 		}
-		return functionsWithoutTests[i].Line < functionsWithoutTests[j].Line
+		return result[i].Line < result[j].Line
 	})
 
-	// Analyze: find misplaced tests
-	// A test is misplaced if it calls functions from a different source file
-	var misplacedTests []MisplacedTest
+	return result
+}
+
+// isFunctionTested checks if a function is in the tested set
+func isFunctionTested(f FuncInfo, testedFuncs map[string]bool) bool {
+	key := f.Name
+	if f.Receiver != "" {
+		key = f.Receiver + "_" + f.Name
+	}
+	return testedFuncs[key] || testedFuncs[f.Name]
+}
+
+// findMisplacedTests finds tests that are in the wrong file
+func findMisplacedTests(fileTests map[string][]TestInfo, fileFunctions map[string][]FuncInfo) []MisplacedTest {
+	var result []MisplacedTest
+
 	for testFile, tests := range fileTests {
 		for _, test := range tests {
-			if len(test.CalledFuncs) == 0 {
-				continue
+			if misplaced := checkTestPlacement(test, testFile, fileFunctions); misplaced != nil {
+				result = append(result, *misplaced)
 			}
+		}
+	}
 
-			// Find which source file contains the called functions
-			// Track which source files are called from this test
-			sourceFileCounts := make(map[string]int)
-			for _, calledFunc := range test.CalledFuncs {
-				for sourceFile, funcs := range fileFunctions {
-					for _, f := range funcs {
-						funcKey := f.Name
-						if f.Receiver != "" {
-							funcKey = f.Receiver + "_" + f.Name
-						}
-						if funcKey == calledFunc || f.Name == calledFunc {
-							sourceFileCounts[sourceFile]++
-							break
-						}
-					}
-				}
-			}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].ActualFile != result[j].ActualFile {
+			return result[i].ActualFile < result[j].ActualFile
+		}
+		return result[i].Test.Line < result[j].Test.Line
+	})
 
-			// Find the most called source file (primary source)
-			var primarySource string
-			maxCalls := 0
-			for src, count := range sourceFileCounts {
-				if count > maxCalls {
-					maxCalls = count
-					primarySource = src
-				}
-			}
+	return result
+}
 
-			if primarySource != "" {
-				// Expected test file is source_test.go
-				expectedTestFile := strings.TrimSuffix(primarySource, ".go") + "_test.go"
-				if testFile != expectedTestFile {
-					// Check if the test file is in the same directory
-					testDir := filepath.Dir(testFile)
-					expectedDir := filepath.Dir(expectedTestFile)
-					if testDir == expectedDir {
-						misplacedTests = append(misplacedTests, MisplacedTest{
-							Test:         test,
-							ExpectedFile: expectedTestFile,
-							ActualFile:   testFile,
-						})
-					}
+// checkTestPlacement checks if a test is in the correct file
+func checkTestPlacement(test TestInfo, testFile string, fileFunctions map[string][]FuncInfo) *MisplacedTest {
+	if len(test.CalledFuncs) == 0 {
+		return nil
+	}
+
+	primarySource := findPrimarySourceFile(test.CalledFuncs, fileFunctions)
+	if primarySource == "" {
+		return nil
+	}
+
+	expectedTestFile := strings.TrimSuffix(primarySource, ".go") + "_test.go"
+	if testFile == expectedTestFile {
+		return nil
+	}
+
+	// Only report if in the same directory
+	if filepath.Dir(testFile) != filepath.Dir(expectedTestFile) {
+		return nil
+	}
+
+	return &MisplacedTest{
+		Test:         test,
+		ExpectedFile: expectedTestFile,
+		ActualFile:   testFile,
+	}
+}
+
+// findPrimarySourceFile finds the source file with the most called functions
+func findPrimarySourceFile(calledFuncs []string, fileFunctions map[string][]FuncInfo) string {
+	sourceFileCounts := make(map[string]int)
+
+	for _, calledFunc := range calledFuncs {
+		for sourceFile, funcs := range fileFunctions {
+			for _, f := range funcs {
+				if matchesFunctionCall(f, calledFunc) {
+					sourceFileCounts[sourceFile]++
+					break
 				}
 			}
 		}
 	}
 
-	// Sort misplaced tests
-	sort.Slice(misplacedTests, func(i, j int) bool {
-		if misplacedTests[i].ActualFile != misplacedTests[j].ActualFile {
-			return misplacedTests[i].ActualFile < misplacedTests[j].ActualFile
+	var primarySource string
+	maxCalls := 0
+	for src, count := range sourceFileCounts {
+		if count > maxCalls {
+			maxCalls = count
+			primarySource = src
 		}
-		return misplacedTests[i].Test.Line < misplacedTests[j].Test.Line
-	})
+	}
 
-	return &AnalysisResult{
-		FunctionsWithoutTests: functionsWithoutTests,
-		MisplacedTests:        misplacedTests,
-	}, nil
+	return primarySource
+}
+
+// matchesFunctionCall checks if a function matches a called function name
+func matchesFunctionCall(f FuncInfo, calledFunc string) bool {
+	funcKey := f.Name
+	if f.Receiver != "" {
+		funcKey = f.Receiver + "_" + f.Name
+	}
+	return funcKey == calledFunc || f.Name == calledFunc
 }
 
 // isTestFunction checks if a function name is a test function
