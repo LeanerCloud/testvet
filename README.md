@@ -96,10 +96,39 @@ Summary: 3 functions without tests, 1 misplaced tests
 | `-exclude-private` | `false` | Exclude unexported functions from analysis |
 | `-verbose` | `false` | Show verbose output including parse warnings |
 
+## testvet vs go test -cover
+
+These tools measure different aspects of test coverage:
+
+| Aspect | testvet | go test -cover |
+|--------|---------|----------------|
+| **Question answered** | Is this function called from any test? | What percentage of statements are executed? |
+| **Granularity** | Per function (binary: yes/no) | Per statement (percentage) |
+| **Use case** | Find completely untested functions | Measure thoroughness of existing tests |
+
+**Example**: A function with complex error handling might show:
+- testvet: ✓ covered (called from a test)
+- go test -cover: 60% (only the happy path is tested)
+
+Both metrics are valuable:
+- Use **testvet** to find functions with zero test coverage
+- Use **go test -cover** to measure how thoroughly each function is tested
+
+```bash
+# Find untested functions
+testvet .
+
+# Measure statement coverage
+go test -cover ./...
+
+# View detailed coverage report
+go test -coverprofile=coverage.out ./...
+go tool cover -html=coverage.out
+```
+
 ## Limitations
 
 - AST analysis only detects direct function calls within test functions (not calls from helper functions)
-- Does not measure actual line/branch coverage (use `go test -cover` for that)
 
 ## Contributing
 
