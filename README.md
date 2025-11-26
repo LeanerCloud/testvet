@@ -5,6 +5,7 @@ A Go static analysis tool that identifies missing test coverage and misplaced te
 ## Features
 
 - **Missing Test Detection**: Finds functions and methods not called from any test function
+- **Low Coverage Detection**: Identifies functions with statement coverage below a threshold (uses `go test -cover`)
 - **AST-Based Call Analysis**: Analyzes actual function calls in tests, not naming conventions
 - **Misplaced Test Detection**: Identifies tests that primarily call functions from a different source file
 - **Method Support**: Handles methods with receivers, including generics
@@ -39,6 +40,9 @@ testvet -dir . -exclude-private
 
 # Show verbose output (parse warnings)
 testvet -dir . -verbose
+
+# Show functions with statement coverage below 80%
+testvet -threshold 80
 ```
 
 ## Example Output
@@ -71,6 +75,25 @@ TestCreateUser (line 15):
 ================================================================================
 Summary: 3 functions without tests, 1 misplaced tests
 ```
+
+### With `-threshold` flag
+
+When using `-threshold`, testvet also runs `go test -cover` and reports functions with statement coverage below the specified percentage:
+
+```
+--------------------------------------------------------------------------------
+LOW COVERAGE FUNCTIONS (below 80.0%) (2)
+--------------------------------------------------------------------------------
+
+handlers/user.go:
+  Line 25: CreateUser (45.5%)
+  Line 48: ValidateEmail (72.0%)
+
+================================================================================
+Summary: 0 functions without tests, 0 misplaced tests, 2 low coverage functions
+```
+
+This helps identify functions that have tests but need more thorough testing (e.g., missing error path coverage).
 
 ## How It Works
 
@@ -113,19 +136,25 @@ These tools measure different aspects of test coverage:
 
 Both metrics are valuable:
 - Use **testvet** to find functions with zero test coverage
-- Use **go test -cover** to measure how thoroughly each function is tested
+- Use **testvet -threshold N** to find functions with low statement coverage
+- Use **go test -cover** to measure overall statement coverage
 
 ```bash
 # Find untested functions
 testvet .
 
-# Measure statement coverage
+# Find functions with <80% statement coverage
+testvet -threshold 80
+
+# Measure overall statement coverage
 go test -cover ./...
 
 # View detailed coverage report
 go test -coverprofile=coverage.out ./...
 go tool cover -html=coverage.out
 ```
+
+The `-threshold` flag bridges both approaches: it uses `go test -cover` under the hood but presents results in testvet's familiar format, making it easy to identify poorly-tested functions that need attention.
 
 ## Limitations
 
