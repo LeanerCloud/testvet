@@ -239,38 +239,49 @@ func checkTestPlacement(test TestInfo, testFile string, fileFunctions map[string
 // findSourceByTestName tries to find the function under test by extracting
 // the function name from the test name (e.g., TestFoo -> Foo)
 func findSourceByTestName(testName string, calledFuncs []string, fileFunctions map[string][]FuncInfo) string {
-	funcName := extractFunctionNameFromTest(testName)
-	if funcName == "" {
+	candidates := extractFunctionNamesFromTest(testName)
+	if len(candidates) == 0 {
 		return ""
 	}
 
+	// Try each candidate function name
+	for _, funcName := range candidates {
+		if sourceFile := tryMatchFunctionName(funcName, calledFuncs, fileFunctions); sourceFile != "" {
+			return sourceFile
+		}
+	}
+
+	return ""
+}
+
+// tryMatchFunctionName tries to match a function name against called functions and source files
+func tryMatchFunctionName(funcName string, calledFuncs []string, fileFunctions map[string][]FuncInfo) string {
 	// Check if this function was actually called in the test
-	funcCalled := false
+	matchedName := ""
 	for _, called := range calledFuncs {
 		// Match both "FuncName" and "Type_FuncName" patterns
 		if called == funcName || strings.HasSuffix(called, "_"+funcName) {
-			funcCalled = true
+			matchedName = funcName
 			break
 		}
 		// Also try case-insensitive match for first letter (TestFoo -> foo)
 		if len(funcName) > 0 {
 			lowerFirst := strings.ToLower(funcName[:1]) + funcName[1:]
 			if called == lowerFirst || strings.HasSuffix(called, "_"+lowerFirst) {
-				funcName = lowerFirst
-				funcCalled = true
+				matchedName = lowerFirst
 				break
 			}
 		}
 	}
 
-	if !funcCalled {
+	if matchedName == "" {
 		return ""
 	}
 
 	// Find which source file contains this function
 	for sourceFile, funcs := range fileFunctions {
 		for _, f := range funcs {
-			if f.Name == funcName {
+			if f.Name == matchedName {
 				return sourceFile
 			}
 		}
@@ -279,12 +290,16 @@ func findSourceByTestName(testName string, calledFuncs []string, fileFunctions m
 	return ""
 }
 
-// extractFunctionNameFromTest extracts the function name from a test name
-// TestFoo -> Foo, TestFoo_Bar -> Foo, Test_Foo -> Foo, TestFooBar -> FooBar
-func extractFunctionNameFromTest(testName string) string {
+// extractFunctionNameFromTest extracts candidate function names from a test name
+// Returns multiple candidates to try, in order of preference:
+// TestFoo -> [Foo]
+// TestFoo_Bar -> [Foo, Bar] (Bar might be the method if Foo is a type)
+// Test_Foo_Bar -> [Foo, Bar]
+// TestAutoScalingGroup_needReplaceOnDemandInstances -> [AutoScalingGroup, needReplaceOnDemandInstances]
+func extractFunctionNamesFromTest(testName string) []string {
 	// Remove "Test" prefix
 	if !strings.HasPrefix(testName, "Test") {
-		return ""
+		return nil
 	}
 	name := testName[4:]
 
@@ -293,12 +308,37 @@ func extractFunctionNameFromTest(testName string) string {
 		name = name[1:]
 	}
 
-	// Handle TestFoo_SubTest pattern - take only the part before underscore
-	if idx := strings.Index(name, "_"); idx > 0 {
-		name = name[:idx]
+	if name == "" {
+		return nil
 	}
 
-	return name
+	// Split by underscore to get all parts
+	parts := strings.Split(name, "_")
+	if len(parts) == 1 {
+		return []string{parts[0]}
+	}
+
+	// Return both the first part (might be type name) and subsequent parts (might be method names)
+	// For TestAutoScalingGroup_needReplaceOnDemandInstances:
+	// parts = [AutoScalingGroup, needReplaceOnDemandInstances]
+	// We want to try needReplaceOnDemandInstances first (more specific), then AutoScalingGroup
+	var candidates []string
+	for i := len(parts) - 1; i >= 0; i-- {
+		if parts[i] != "" {
+			candidates = append(candidates, parts[i])
+		}
+	}
+	return candidates
+}
+
+// extractFunctionNameFromTest extracts the function name from a test name (legacy, returns first candidate)
+func extractFunctionNameFromTest(testName string) string {
+	candidates := extractFunctionNamesFromTest(testName)
+	if len(candidates) == 0 {
+		return ""
+	}
+	// Return the last candidate (first part after Test) for backward compatibility
+	return candidates[len(candidates)-1]
 }
 
 // findPrimarySourceFile finds the source file with the most called functions
