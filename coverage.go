@@ -61,6 +61,82 @@ func analyzeCoverage(dir string, threshold float64, verbose bool) ([]LowCoverage
 	return parseCoverageOutput(stdout.String(), dir, threshold)
 }
 
+// getCoverageMap runs go test and returns a map of function names to their coverage percentage
+// This is used to filter out indirectly tested functions from the "missing tests" list
+func getCoverageMap(dir string, verbose bool) (map[string]float64, error) {
+	// Create temporary file for coverage profile
+	tmpFile, err := os.CreateTemp("", "coverage-*.out")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create temp file: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+	tmpFile.Close()
+	defer os.Remove(tmpPath)
+
+	// Run go test with coverage
+	if verbose {
+		fmt.Fprintf(os.Stderr, "Running: go test -coverprofile=%s ./...\n", tmpPath)
+	}
+
+	cmd := exec.Command("go", "test", "-coverprofile="+tmpPath, "./...")
+	cmd.Dir = dir
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		if _, ok := err.(*exec.ExitError); ok {
+			return nil, fmt.Errorf("go test failed: %s", stderr.String())
+		}
+		return nil, fmt.Errorf("failed to run go test: %w", err)
+	}
+
+	// Run go tool cover to get function coverage
+	if verbose {
+		fmt.Fprintf(os.Stderr, "Running: go tool cover -func=%s\n", tmpPath)
+	}
+
+	cmd = exec.Command("go", "tool", "cover", "-func="+tmpPath)
+	cmd.Dir = dir
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("failed to run go tool cover: %w\n%s", err, stderr.String())
+	}
+
+	return parseCoverageToMap(stdout.String(), dir)
+}
+
+// parseCoverageToMap parses go tool cover output into a map of function name -> coverage %
+func parseCoverageToMap(output, baseDir string) (map[string]float64, error) {
+	result := make(map[string]float64)
+
+	re := regexp.MustCompile(`^(.+):(\d+):\s+(\S+)\s+(\d+\.?\d*)%$`)
+
+	scanner := bufio.NewScanner(strings.NewReader(output))
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		if strings.HasPrefix(line, "total:") {
+			continue
+		}
+
+		matches := re.FindStringSubmatch(line)
+		if matches == nil {
+			continue
+		}
+
+		funcName := matches[3]
+		coverage, _ := strconv.ParseFloat(matches[4], 64)
+
+		// Store the function name -> coverage mapping
+		result[funcName] = coverage
+	}
+
+	return result, nil
+}
+
 // parseCoverageOutput parses go tool cover -func output
 // Format: file:line:	funcName		percentage%
 func parseCoverageOutput(output, baseDir string, threshold float64) ([]LowCoverageFunc, error) {
