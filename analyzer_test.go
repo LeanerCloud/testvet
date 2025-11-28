@@ -253,7 +253,7 @@ func TestPublicFunc(t *testing.T) {
 		t.Fatalf("Failed to write test file: %v", err)
 	}
 
-	result, err := analyzeProject(tmpDir, false, false)
+	result, err := analyzeProject(tmpDir, false, false, nil)
 	if err != nil {
 		t.Fatalf("analyzeProject failed: %v", err)
 	}
@@ -306,7 +306,7 @@ func TestPublicFunc(t *testing.T) {
 	}
 
 	t.Run("finds functions without tests", func(t *testing.T) {
-		result, err := analyzeProject(tmpDir, false, false)
+		result, err := analyzeProject(tmpDir, false, false, nil)
 		if err != nil {
 			t.Fatalf("analyzeProject failed: %v", err)
 		}
@@ -321,7 +321,7 @@ func TestPublicFunc(t *testing.T) {
 	})
 
 	t.Run("excludes private functions when flag set", func(t *testing.T) {
-		result, err := analyzeProject(tmpDir, true, false)
+		result, err := analyzeProject(tmpDir, true, false, nil)
 		if err != nil {
 			t.Fatalf("analyzeProject failed: %v", err)
 		}
@@ -379,7 +379,7 @@ func TestFuncB(t *testing.T) {
 		t.Fatalf("Failed to write test file: %v", err)
 	}
 
-	result, err := analyzeProject(tmpDir, false, false)
+	result, err := analyzeProject(tmpDir, false, false, nil)
 	if err != nil {
 		t.Fatalf("analyzeProject failed: %v", err)
 	}
@@ -433,7 +433,7 @@ func RegularFunc() {}
 		t.Fatalf("Failed to write source file: %v", err)
 	}
 
-	result, err := analyzeProject(tmpDir, false, false)
+	result, err := analyzeProject(tmpDir, false, false, nil)
 	if err != nil {
 		t.Fatalf("analyzeProject failed: %v", err)
 	}
@@ -564,7 +564,7 @@ func TestFindFunctionsWithoutTests(t *testing.T) {
 	}
 	testedFuncs := map[string]bool{"TestedFunc": true}
 
-	result := findFunctionsWithoutTests(fileFunctions, testedFuncs)
+	result := findFunctionsWithoutTests(fileFunctions, testedFuncs, nil)
 
 	if len(result) != 1 {
 		t.Fatalf("Expected 1 untested function, got %d", len(result))
@@ -593,7 +593,8 @@ func TestFindPrimarySourceFile(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := findPrimarySourceFile(tt.calledFuncs, fileFunctions)
+			// Pass empty properlyTestedFuncs map since we're testing basic functionality
+			got := findPrimarySourceFile(tt.calledFuncs, fileFunctions, map[string]bool{})
 			if got != tt.expected {
 				t.Errorf("findPrimarySourceFile(%v) = %q, want %q", tt.calledFuncs, got, tt.expected)
 			}
@@ -635,7 +636,8 @@ func TestCheckTestPlacement(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := checkTestPlacement(tt.test, tt.testFile, fileFunctions)
+			// Pass empty properlyTestedFuncs map since we're testing basic functionality
+			result := checkTestPlacement(tt.test, tt.testFile, fileFunctions, map[string]bool{})
 			if tt.expectMisplace && result == nil {
 				t.Error("Expected misplaced test, got nil")
 			}
@@ -874,7 +876,7 @@ func TestFindFunctionsWithoutTests_Sorting(t *testing.T) {
 	}
 	testedFuncs := map[string]bool{} // none tested
 
-	result := findFunctionsWithoutTests(fileFunctions, testedFuncs)
+	result := findFunctionsWithoutTests(fileFunctions, testedFuncs, nil)
 
 	if len(result) != 3 {
 		t.Fatalf("Expected 3 untested functions, got %d", len(result))
@@ -987,7 +989,8 @@ func TestCheckTestPlacement_NamingConvention(t *testing.T) {
 		CalledFuncs: []string{"needReplaceOnDemandInstances", "makeInstancesWithCatalog", "makeInstancesWithCatalog", "makeInstancesWithCatalog"},
 	}
 
-	result := checkTestPlacement(test, "asg_capacity_test.go", fileFunctions)
+	// Pass empty properlyTestedFuncs map since we're testing basic functionality
+	result := checkTestPlacement(test, "asg_capacity_test.go", fileFunctions, map[string]bool{})
 
 	// Should NOT be misplaced - naming convention should match it to asg_capacity.go
 	if result != nil {
