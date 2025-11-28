@@ -29,7 +29,7 @@ go build -o testvet .
 ## Usage
 
 ```bash
-# Analyze current directory
+# Analyze current directory (runs go test for coverage data by default)
 testvet
 
 # Analyze a specific directory
@@ -43,6 +43,9 @@ testvet -dir . -verbose
 
 # Show functions with statement coverage below 80%
 testvet -threshold 80
+
+# Disable coverage filtering (AST-only analysis, faster but less accurate)
+testvet -use-coverage=false
 ```
 
 ## Example Output
@@ -101,8 +104,9 @@ This helps identify functions that have tests but need more thorough testing (e.
 2. **Function Extraction**: Extracts all function and method declarations from source files
 3. **Test Extraction**: Identifies test functions (`Test*`, `Benchmark*`, `Example*`, `Fuzz*`) from `_test.go` files
 4. **Call Analysis**: Walks the AST of each test function to find all function calls within it
-5. **Matching**: A function is considered tested if it's called from any test function
-6. **Misplacement Detection**: A test is misplaced if it primarily calls functions from a different source file
+5. **Coverage Filtering** (default): Runs `go test -coverprofile` and excludes functions with >=50% coverage from the "missing tests" list (catches indirectly tested functions)
+6. **Matching**: A function is considered tested if it's called from any test function or has adequate coverage
+7. **Misplacement Detection**: A test is misplaced if it primarily calls functions from a different source file
 
 ### Excluded from Analysis
 
@@ -119,6 +123,7 @@ This helps identify functions that have tests but need more thorough testing (e.
 | `-exclude-private` | `false` | Exclude unexported functions from analysis |
 | `-verbose` | `false` | Show verbose output including parse warnings |
 | `-threshold` | `0` | Show functions with statement coverage below this percentage (0 to disable, excludes main/init) |
+| `-use-coverage` | `true` | Use coverage data to filter out indirectly tested functions (functions with >=50% coverage are considered tested) |
 
 ## testvet vs go test -cover
 
@@ -167,3 +172,9 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 ## License
 
 MIT License - see [LICENSE](LICENSE) for details.
+
+## Shameless plug
+
+This tool is brought to you by [LeanerCloud](https://leanercloud.com). We help companies reduce their cloud costs using a mix of services and tools such as [AutoSpotting](https://autospotting.io).
+
+**Running at significant scale on AWS and looking for cost optimization help?** [Contact us](https://forms.gle/kTLKmwzs9TxF5DcY7).
